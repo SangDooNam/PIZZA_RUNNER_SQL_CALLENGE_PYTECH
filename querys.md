@@ -241,7 +241,45 @@ GROUP BY pn.pizza_name;
 3. The Pizza Runner team now wants to add an additional ratings system that allows customers to rate their runner, how would you design an additional table for this new dataset - generate a schema for this new table and insert your own data for ratings for each successful customer order between 1 to 5.
 
 ```
+CREATE TYPE ratings AS ENUM ('1', '2', '3', '4', '5');
 
+ALTER TABLE runner_orders ADD COLUMN rating ratings;
+
+ALTER TABLE runners ADD PRIMARY KEY (runner_id);
+
+CREATE TABLE runner_evaluation 
+(runner_id INT, rating DECIMAL(3,2),
+FOREIGN KEY (runner_id) REFERENCES runners(runner_id));
+
+CREATE OR REPLACE FUNCTION update_runner_evaluation() RETURNS TRIGGER AS $$
+DECLARE avg_rating DECIMAL;
+BEGIN
+	SELECT AVG(sub.rating_int) INTO avg_rating 
+	FROM (SELECT runner_id, cancellation, CASE 
+		WHEN rating = '1' THEN 1 
+		WHEN rating = '2' THEN 2
+		WHEN rating = '3' THEN 3
+		WHEN rating = '4' THEN 4
+		WHEN rating = '5' THEN 5 END AS rating_int FROM runner_orders
+		) AS sub WHERE sub.cancellation IS NULL AND sub.runner_id = NEW.runner_id;
+	
+	avg_rating := COALESCE(avg_rating, 0);
+	
+	IF EXISTS (SELECT 1 FROM runner_evaluation WHERE runner_id = NEW.runner_id) THEN 
+		UPDATE runner_evaluation SET rating = avg_rating WHERE runner_id = NEW.runner_id;
+	ELSE
+		INSERT INTO runner_evaluation(runner_id, rating)
+		VALUES (NEW.runner_id, avg_rating);
+	END IF;
+	
+	RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_runner_evaluation_trigger
+AFTER INSERT OR UPDATE ON runner_orders
+FOR EACH ROW
+EXECUTE FUNCTION update_runner_evaluation();
 ```
 
 4. Using your newly generated table - can you join all of the information together to form a table which has the following information for successful deliveries?
@@ -257,15 +295,41 @@ GROUP BY pn.pizza_name;
 * Total number of pizzas
 
 ```
-
+SELECT DISTINCT
+co.customer_id, 
+co.order_id, 
+ro.runner_id, 
+ro.rating,
+re.rating AS avg_rating,
+co.order_time,
+ro.pickup_time,
+ROUND(EXTRACT (EPOCH FROM (ro.pickup_time - co.order_time)) / 60, 2) AS time_between_order_and_pickup_minutes,
+ro.duration,
+ROUND((ro.distance_in_meter / 1000) / (EXTRACT(EPOCH FROM ro.duration) / 3600), 2) AS average_speed_km_per_hour,
+COUNT(co.pizza_id) AS total_number_of_pizzas
+FROM customer_orders co 
+LEFT JOIN runner_orders ro ON ro.id = co.order_id
+LEFT JOIN runner_evaluation re ON ro.runner_id = re.runner_id
+GROUP BY co.customer_id, co.order_id, ro.runner_id, ro.rating, avg_rating, co.order_time, ro.pickup_time, ro.duration, average_speed_km_per_hour
+ORDER BY co.order_id;
 ```
     
 5. If a Meat Lovers pizza was $12 and Vegetarian $10 fixed prices with no cost for extras and each runner is paid $0.30 per kilometre traveled - how much money does Pizza Runner have left over after these deliveries?
 
-```
-
+``
+WITH revenue AS (SELECT SUM(CASE WHEN pizza_id = 1 THEN 12 ELSE 10 END) AS total_revenue FROM customer_orders co),
+delivery_fee AS (SELECT SUM((ro.distance_in_meter / 1000) * 0.30) AS total_delivery_fee FROM runner_orders ro WHERE ro.cancellation IS NULL)
+SELECT (SELECT total_revenue FROM revenue) - (SELECT totaL_delivery_fee FROM delivery_fee) AS leftover_money;
 ```
   
 **Bonus Questions**
    
 If Danny wants to expand his range of pizzas - how would this impact the existing data design? Write an `INSERT` statement to demonstrate what would happen if a new `Supreme` pizza with all the toppings was added to the Pizza Runner menu?
+
+
+ALTER TABLE pizza_recipes ADD PRIMARY KEY (pizza_id);
+ALTER TABLE pizza_names ADD FOREIGN KEY (pizza_id) REFERENCES pizza_recipes(pizza_id);
+
+INSERT INTO pizza_recipes (pizza_id, toppings) VALUES (3, ARRAY[1,2,3,4,5,6,7,8,9,10,11,12]);
+
+INSERT INTO pizza_names (pizza_id, pizza_name) VALUES (3,'Supreme');
